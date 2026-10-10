@@ -19,7 +19,7 @@ export type CacheUsageSnapshot = {
 
 export type PricingSnapshot = {
   id: string;
-  provider: 'deepseek' | 'gemini' | 'openai';
+  provider: 'deepseek' | 'gemini' | 'openai' | 'anthropic';
   label: string;
   sourceUrl: string;
   sourceDate: string;

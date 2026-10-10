@@ -17,11 +17,51 @@ type PricingRule = {
   sourceUrl: string;
   sourceDate: string;
   matches: (model: string) => boolean;
-  rates: (usage: CacheUsageSnapshot) => PricingRateSet;
+  rates: (usage: CacheUsageSnapshot, timestamp: number) => PricingRateSet;
 };
 
-const SOURCE_DATE = '2026-05-22';
-const GEMINI_PRO_THRESHOLD = 200_000;
+const SOURCE_DATE = '2026-10-10';
+const OPENAI_LONG_CONTEXT_THRESHOLD = 272_000;
+const ANTHROPIC_HAIKU_LONG_CONTEXT_THRESHOLD = 100_000;
+const GEMINI_FLASH_INTRO_END = Date.UTC(2027, 0, 1);
+
+// 2026 Chinese public-holiday dates from 国办发明电〔2025〕7号.
+// DeepSeek explicitly treats Chinese public holidays as off-peak for the full day.
+const DEEPSEEK_CHINA_PUBLIC_HOLIDAYS_2026 = new Set([
+  '2026-01-01',
+  '2026-01-02',
+  '2026-01-03',
+  '2026-02-15',
+  '2026-02-16',
+  '2026-02-17',
+  '2026-02-18',
+  '2026-02-19',
+  '2026-02-20',
+  '2026-02-21',
+  '2026-02-22',
+  '2026-02-23',
+  '2026-04-04',
+  '2026-04-05',
+  '2026-04-06',
+  '2026-05-01',
+  '2026-05-02',
+  '2026-05-03',
+  '2026-05-04',
+  '2026-05-05',
+  '2026-06-19',
+  '2026-06-20',
+  '2026-06-21',
+  '2026-09-25',
+  '2026-09-26',
+  '2026-09-27',
+  '2026-10-01',
+  '2026-10-02',
+  '2026-10-03',
+  '2026-10-04',
+  '2026-10-05',
+  '2026-10-06',
+  '2026-10-07',
+]);
 
 const PRICING_RULES: PricingRule[] = [
   {
@@ -30,28 +70,53 @@ const PRICING_RULES: PricingRule[] = [
     label: 'DeepSeek V4 Pro',
     sourceUrl: 'https://api-docs.deepseek.com/quick_start/pricing/',
     sourceDate: SOURCE_DATE,
-    matches: model => includesAny(model, ['deepseek-v4-pro', 'deepseek_v4_pro', 'deepseek pro', 'deepseek-pro']),
-    rates: () => ({
-      inputHitUsdPerMillion: 0.003625,
-      inputMissUsdPerMillion: 0.435,
-      outputUsdPerMillion: 0.87,
-      note: 'DeepSeek v4-pro current official listed rate.',
+    matches: model =>
+      includesAny(model, ['deepseek-v4-pro', 'deepseek_v4_pro', 'deepseek v4 pro', 'deepseek-v4-pro-0813']),
+    rates: (_usage, timestamp) => deepSeekTimeOfUseRates(timestamp, {
+      offPeak: [0.022, 0.66, 1.98],
+      peak: [0.044, 1.32, 3.96],
     }),
   },
   {
-    id: 'deepseek-v4-flash',
+    id: 'deepseek-v4.1-flash',
     provider: 'deepseek',
-    label: 'DeepSeek V4 Flash / chat / reasoner',
+    label: 'DeepSeek V4.1 Flash',
     sourceUrl: 'https://api-docs.deepseek.com/quick_start/pricing/',
     sourceDate: SOURCE_DATE,
     matches: model =>
-      includesAny(model, ['deepseek-v4-flash', 'deepseek_v4_flash', 'deepseek-chat', 'deepseek-reasoner', 'deepseek flash']),
-    rates: () => ({
-      inputHitUsdPerMillion: 0.0028,
-      inputMissUsdPerMillion: 0.14,
-      outputUsdPerMillion: 0.28,
-      note: 'DeepSeek chat/reasoner compatibility aliases use the v4-flash row.',
+      includesAny(model, [
+        'deepseek-flash',
+        'deepseek-v4.1-flash',
+        'deepseek_v4.1_flash',
+        'deepseek-v4-flash',
+        'deepseek_v4_flash',
+        'deepseek-v4-flash-vision-exp',
+        'deepseek flash',
+        'deepseek-chat',
+        'deepseek-reasoner',
+      ]),
+    rates: (_usage, timestamp) => deepSeekTimeOfUseRates(timestamp, {
+      offPeak: [0.003, 0.15, 0.6],
+      peak: [0.006, 0.3, 1.2],
     }),
+  },
+  {
+    id: 'gemini-3.8-flash',
+    provider: 'gemini',
+    label: 'Gemini 3.8 Flash',
+    sourceUrl: 'https://ai.google.dev/gemini-api/docs/pricing',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gemini-3.8-flash', 'gemini 3.8 flash']),
+    rates: (_usage, timestamp) => geminiFlashIntroRates(timestamp, 'Gemini 3.8 Flash'),
+  },
+  {
+    id: 'gemini-3.7-flash',
+    provider: 'gemini',
+    label: 'Gemini 3.7 Flash',
+    sourceUrl: 'https://ai.google.dev/gemini-api/docs/pricing',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gemini-3.7-flash', 'gemini 3.7 flash']),
+    rates: (_usage, timestamp) => geminiFlashIntroRates(timestamp, 'Gemini 3.7 Flash'),
   },
   {
     id: 'gemini-3.5-flash',
@@ -101,13 +166,14 @@ const PRICING_RULES: PricingRule[] = [
         'gemini 3.1 pro',
       ]),
     rates: usage => {
-      const promptTokens = usage.totalCacheTokens;
-      const largePrompt = promptTokens > GEMINI_PRO_THRESHOLD;
+      const largePrompt = usage.totalCacheTokens > 200_000;
       return {
         inputHitUsdPerMillion: largePrompt ? 0.4 : 0.2,
         inputMissUsdPerMillion: largePrompt ? 4 : 2,
         outputUsdPerMillion: largePrompt ? 18 : 12,
-        note: largePrompt ? 'Gemini 3.1 Pro Preview standard prompts > 200k tier.' : 'Gemini 3.1 Pro Preview standard prompts <= 200k tier.',
+        note: largePrompt
+          ? 'Gemini 3.1 Pro Preview standard prompts > 200k tier.'
+          : 'Gemini 3.1 Pro Preview standard prompts <= 200k tier.',
       };
     },
   },
@@ -126,52 +192,162 @@ const PRICING_RULES: PricingRule[] = [
     }),
   },
   {
+    id: 'gpt-6-astra',
+    provider: 'openai',
+    label: 'GPT-6 Astra',
+    sourceUrl: 'https://developers.openai.com/api/docs/pricing',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gpt-6-astra', 'gpt 6 astra']),
+    rates: usage => openAiLongContextRates(usage, [1, 10, 50], 'GPT-6 Astra'),
+  },
+  {
+    id: 'gpt-6.1-sol',
+    provider: 'openai',
+    label: 'GPT-6.1 Sol',
+    sourceUrl: 'https://developers.openai.com/api/docs/pricing',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gpt-6.1-sol', 'gpt 6.1 sol']),
+    rates: usage => openAiLongContextRates(usage, [0.1, 2, 10], 'GPT-6.1 Sol'),
+  },
+  {
+    id: 'gpt-6-sol',
+    provider: 'openai',
+    label: 'GPT-6 Sol',
+    sourceUrl: 'https://developers.openai.com/api/docs/pricing',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gpt-6-sol', 'gpt 6 sol']),
+    rates: usage => openAiLongContextRates(usage, [0.2, 2, 10], 'GPT-6 Sol'),
+  },
+  {
+    id: 'gpt-6-luna',
+    provider: 'openai',
+    label: 'GPT-6 Luna',
+    sourceUrl: 'https://developers.openai.com/api/docs/pricing',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gpt-6-luna', 'gpt 6 luna']),
+    rates: usage => openAiLongContextRates(usage, [0.01, 0.1, 0.5], 'GPT-6 Luna'),
+  },
+  {
+    id: 'gpt-5.6-sol',
+    provider: 'openai',
+    label: 'GPT-5.6 Sol',
+    sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-5.6-sol',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gpt-5.6-sol', 'gpt 5.6 sol']) || normalizedModel(model) === 'gpt-5.6',
+    rates: usage => {
+      const rates = openAiLongContextRates(usage, [0.4, 4, 20], 'GPT-5.6 Sol');
+      rates.note = `${rates.note ?? ''} Promotional pricing is listed as available at least through 2026-11-21.`.trim();
+      return rates;
+    },
+  },
+  {
+    id: 'gpt-5.6-terra',
+    provider: 'openai',
+    label: 'GPT-5.6 Terra',
+    sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-5.6-terra',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gpt-5.6-terra', 'gpt 5.6 terra']),
+    rates: usage => openAiLongContextRates(usage, [0.2, 2, 12], 'GPT-5.6 Terra'),
+  },
+  {
+    id: 'gpt-5.6-luna',
+    provider: 'openai',
+    label: 'GPT-5.6 Luna',
+    sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-5.6-luna',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['gpt-5.6-luna', 'gpt 5.6 luna']),
+    rates: usage => openAiLongContextRates(usage, [0.02, 0.2, 1.2], 'GPT-5.6 Luna'),
+  },
+  {
     id: 'gpt-5.5',
     provider: 'openai',
     label: 'GPT-5.5',
-    sourceUrl: 'https://openai.com/api/pricing/',
+    sourceUrl: 'https://developers.openai.com/api/docs/pricing',
     sourceDate: SOURCE_DATE,
     matches: model => normalizedModel(model).includes('gpt-5.5'),
     rates: () => ({
       inputHitUsdPerMillion: 0.5,
       inputMissUsdPerMillion: 5,
       outputUsdPerMillion: 30,
-      note: 'OpenAI standard processing price for context lengths under 270K.',
+      note: 'OpenAI standard processing price.',
     }),
   },
   {
     id: 'gpt-5.4-mini',
     provider: 'openai',
     label: 'GPT-5.4 mini',
-    sourceUrl: 'https://openai.com/api/pricing/',
+    sourceUrl: 'https://developers.openai.com/api/docs/pricing',
     sourceDate: SOURCE_DATE,
-    matches: model => normalizedModel(model).includes('gpt-5.4-mini') || normalizedModel(model).includes('gpt-5.4 mini'),
+    matches: model => includesAny(model, ['gpt-5.4-mini', 'gpt-5.4 mini']),
     rates: () => ({
       inputHitUsdPerMillion: 0.075,
       inputMissUsdPerMillion: 0.75,
       outputUsdPerMillion: 4.5,
-      note: 'OpenAI standard processing price for context lengths under 270K.',
+      note: 'OpenAI standard processing price.',
     }),
   },
   {
     id: 'gpt-5.4',
     provider: 'openai',
     label: 'GPT-5.4',
-    sourceUrl: 'https://openai.com/api/pricing/',
+    sourceUrl: 'https://developers.openai.com/api/docs/pricing',
     sourceDate: SOURCE_DATE,
     matches: model => normalizedModel(model).includes('gpt-5.4'),
     rates: () => ({
       inputHitUsdPerMillion: 0.25,
       inputMissUsdPerMillion: 2.5,
       outputUsdPerMillion: 15,
-      note: 'OpenAI standard processing price for context lengths under 270K.',
+      note: 'OpenAI standard processing price.',
     }),
+  },
+  {
+    id: 'claude-fable-5.1',
+    provider: 'anthropic',
+    label: 'Claude Fable 5.1',
+    sourceUrl: 'https://platform.claude.com/docs/en/models/fable-5-1/overview',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['claude-fable-5-1', 'claude fable 5.1', 'claude-fable-5.1']),
+    rates: () => anthropicRates([0.25, 10, 50], 'Claude Fable 5.1'),
+  },
+  {
+    id: 'claude-opus-5.5',
+    provider: 'anthropic',
+    label: 'Claude Opus 5.5',
+    sourceUrl: 'https://platform.claude.com/docs/en/models/opus-5-5/overview',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['claude-opus-5-5', 'claude opus 5.5', 'claude-opus-5.5']),
+    rates: () => anthropicRates([0.2, 4, 20], 'Claude Opus 5.5'),
+  },
+  {
+    id: 'claude-sonnet-5.5',
+    provider: 'anthropic',
+    label: 'Claude Sonnet 5.5',
+    sourceUrl: 'https://platform.claude.com/docs/en/models/sonnet-5-5/overview',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['claude-sonnet-5-5', 'claude sonnet 5.5', 'claude-sonnet-5.5']),
+    rates: () => anthropicRates([0.1, 2, 10], 'Claude Sonnet 5.5'),
+  },
+  {
+    id: 'claude-haiku-5.5',
+    provider: 'anthropic',
+    label: 'Claude Haiku 5.5',
+    sourceUrl: 'https://platform.claude.com/docs/en/models/haiku-5-5/overview',
+    sourceDate: SOURCE_DATE,
+    matches: model => includesAny(model, ['claude-haiku-5-5', 'claude haiku 5.5', 'claude-haiku-5.5']),
+    rates: usage => {
+      const largePrompt = usage.totalCacheTokens > ANTHROPIC_HAIKU_LONG_CONTEXT_THRESHOLD;
+      return anthropicRates(
+        largePrompt ? [0.05, 0.5, 2.5] : [0.01, 0.1, 0.5],
+        `Claude Haiku 5.5 ${largePrompt ? '>100k' : '<=100k'} prompt tier`,
+      );
+    },
   },
 ];
 
 export function estimateCacheCost(
   model: string,
   usage: CacheUsageSnapshot,
+  timestamp: number = Date.now(),
 ): {
   pricingSnapshot: PricingSnapshot | null;
   costSnapshot: CacheCostSnapshot | null;
@@ -184,7 +360,7 @@ export function estimateCacheCost(
     };
   }
 
-  const rates = rule.rates(usage);
+  const rates = rule.rates(usage, timestamp);
   const usdToCnyRate = getUsdToCnyRate();
   const pricingSnapshot: PricingSnapshot = {
     id: rule.id,
@@ -223,6 +399,80 @@ export function estimateCacheCost(
       totalCny: usdToCny(inputHitUsd + inputMissUsd + outputUsd, usdToCnyRate),
       savedCny: usdToCny(savedUsd, usdToCnyRate),
     },
+  };
+}
+
+function deepSeekTimeOfUseRates(
+  timestamp: number,
+  rateTable: { offPeak: [number, number, number]; peak: [number, number, number] },
+): PricingRateSet {
+  const peak = isDeepSeekPeakTime(timestamp);
+  const [hit, miss, output] = peak ? rateTable.peak : rateTable.offPeak;
+  return {
+    inputHitUsdPerMillion: hit,
+    inputMissUsdPerMillion: miss,
+    outputUsdPerMillion: output,
+    note: peak
+      ? 'DeepSeek peak rate: 01:00-04:00 or 06:00-10:00 UTC, Monday-Friday, excluding Chinese public holidays.'
+      : 'DeepSeek off-peak rate: all hours outside the weekday peak windows, including weekends and Chinese public holidays.',
+  };
+}
+
+export function isDeepSeekPeakTime(timestamp: number): boolean {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return false;
+
+  const utcDay = date.getUTCDay();
+  if (utcDay === 0 || utcDay === 6) return false;
+  if (isDeepSeekChinesePublicHoliday(timestamp)) return false;
+
+  const utcHour = date.getUTCHours();
+  return (utcHour >= 1 && utcHour < 4) || (utcHour >= 6 && utcHour < 10);
+}
+
+function isDeepSeekChinesePublicHoliday(timestamp: number): boolean {
+  const chinaDate = new Date(timestamp + 8 * 60 * 60 * 1000);
+  const year = chinaDate.getUTCFullYear();
+  if (year !== 2026) return false;
+  const month = String(chinaDate.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(chinaDate.getUTCDate()).padStart(2, '0');
+  return DEEPSEEK_CHINA_PUBLIC_HOLIDAYS_2026.has(`${year}-${month}-${day}`);
+}
+
+function geminiFlashIntroRates(timestamp: number, label: string): PricingRateSet {
+  const introductory = timestamp < GEMINI_FLASH_INTRO_END;
+  return {
+    inputHitUsdPerMillion: introductory ? 0.075 : 0.15,
+    inputMissUsdPerMillion: introductory ? 0.75 : 1.5,
+    outputUsdPerMillion: introductory ? 3.75 : 7.5,
+    note: introductory
+      ? `${label} introductory standard rate through 2026-12-31.`
+      : `${label} standard rate from 2027-01-01.`,
+  };
+}
+
+function openAiLongContextRates(
+  usage: CacheUsageSnapshot,
+  shortRates: [number, number, number],
+  label: string,
+): PricingRateSet {
+  const longContext = usage.totalCacheTokens > OPENAI_LONG_CONTEXT_THRESHOLD;
+  const [hit, miss, output] = shortRates;
+  return {
+    inputHitUsdPerMillion: longContext ? hit * 2 : hit,
+    inputMissUsdPerMillion: longContext ? miss * 2 : miss,
+    outputUsdPerMillion: longContext ? output * 1.5 : output,
+    note: `${label} standard processing; ${longContext ? '>272k' : '<=272k'} input-token tier.`,
+  };
+}
+
+function anthropicRates(rates: [number, number, number], label: string): PricingRateSet {
+  const [hit, miss, output] = rates;
+  return {
+    inputHitUsdPerMillion: hit,
+    inputMissUsdPerMillion: miss,
+    outputUsdPerMillion: output,
+    note: `${label} Claude API standard rate. Cache-write premiums are not separately estimated by this inspector.`,
   };
 }
 
