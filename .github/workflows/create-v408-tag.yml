@@ -1,0 +1,32 @@
+name: create v4.08 tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/create-v408-tag.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create v4.08 tag
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = 'v4.08';
+            const sha = 'e99dffb9a629d0f3f25bcbf6dbc7ba7015f2ef55';
+            try {
+              await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+              core.info(`${tag} already exists`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.git.createRef({ owner, repo, ref: `refs/tags/${tag}`, sha });
+              core.info(`created ${tag} -> ${sha}`);
+            }
