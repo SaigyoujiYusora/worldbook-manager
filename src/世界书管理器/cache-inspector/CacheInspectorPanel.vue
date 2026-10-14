@@ -633,9 +633,9 @@ const deepSeekCurrentRateLabel = computed(() => {
   const pricing = deepSeekCurrentPricing.value;
   if (!pricing) return '费率未匹配';
   return [
-    `命中 ¥${formatMillionRateCny(pricing.inputHitUsdPerMillion, pricing.usdToCnyRate)}/M`,
-    `未命中 ¥${formatMillionRateCny(pricing.inputMissUsdPerMillion, pricing.usdToCnyRate)}/M`,
-    `输出 ¥${formatMillionRateCny(pricing.outputUsdPerMillion, pricing.usdToCnyRate)}/M`,
+    `命中 ¥${formatPricingRateCny(pricing.inputHitCnyPerMillion, pricing.inputHitUsdPerMillion, pricing.usdToCnyRate)}/M`,
+    `未命中 ¥${formatPricingRateCny(pricing.inputMissCnyPerMillion, pricing.inputMissUsdPerMillion, pricing.usdToCnyRate)}/M`,
+    `输出 ¥${formatPricingRateCny(pricing.outputCnyPerMillion, pricing.outputUsdPerMillion, pricing.usdToCnyRate)}/M`,
   ].join(' · ');
 });
 const deepSeekNextTransitionLabel = computed(() => {
@@ -1402,8 +1402,10 @@ function priceTooltip(record: CacheSummaryRecord): string {
   const period = deepSeekPeriod(record);
   return [
     `${pricingSnapshot.label}${period ? ` · ${period === 'peak' ? '🔴 梁文峰' : '🟢 梁文谷'}` : ''}`,
-    `命中 ¥${formatMillionRateCny(pricingSnapshot.inputHitUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M · 未命中 ¥${formatMillionRateCny(pricingSnapshot.inputMissUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M · 输出 ¥${formatMillionRateCny(pricingSnapshot.outputUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M`,
-    `费率日期 ${pricingSnapshot.sourceDate} · 1 USD = ${pricingSnapshot.usdToCnyRate.toFixed(4)} RMB`,
+    `命中 ¥${formatPricingRateCny(pricingSnapshot.inputHitCnyPerMillion, pricingSnapshot.inputHitUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M · 未命中 ¥${formatPricingRateCny(pricingSnapshot.inputMissCnyPerMillion, pricingSnapshot.inputMissUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M · 输出 ¥${formatPricingRateCny(pricingSnapshot.outputCnyPerMillion, pricingSnapshot.outputUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M`,
+    pricingSnapshot.provider === 'deepseek'
+      ? `费率日期 ${pricingSnapshot.sourceDate} · DeepSeek 官方人民币价（不经美元汇率换算）`
+      : `费率日期 ${pricingSnapshot.sourceDate} · 1 USD = ${pricingSnapshot.usdToCnyRate.toFixed(4)} RMB`,
     pricingSnapshot.note ?? '',
   ]
     .filter(Boolean)
@@ -1412,7 +1414,10 @@ function priceTooltip(record: CacheSummaryRecord): string {
 
 function priceForRecord(record: CacheSummaryRecord): ReturnType<typeof estimateCacheCost> {
   void exchangeRateVersion.value;
-  if (record.pricingSnapshot && record.costSnapshot) {
+  const legacyDeepSeekPricing =
+    record.pricingSnapshot?.provider === 'deepseek' &&
+    !Number.isFinite(record.pricingSnapshot.inputHitCnyPerMillion);
+  if (!legacyDeepSeekPricing && record.pricingSnapshot && record.costSnapshot) {
     return { pricingSnapshot: record.pricingSnapshot, costSnapshot: record.costSnapshot };
   }
   return estimateCacheCost(record.model, record, record.timestamp);
@@ -1466,8 +1471,13 @@ function formatBeijingTime(timestamp: number): string {
   });
 }
 
-function formatMillionRateCny(usdPerMillion: number, usdToCnyRate: number): string {
-  return trimTrailingZero((usdPerMillion * usdToCnyRate).toFixed(3));
+function formatPricingRateCny(
+  cnyPerMillion: number | undefined,
+  usdPerMillion: number,
+  usdToCnyRate: number,
+): string {
+  const value = Number.isFinite(cnyPerMillion) ? Number(cnyPerMillion) : usdPerMillion * usdToCnyRate;
+  return trimTrailingZero(value.toFixed(3));
 }
 
 function formatCny(value: number): string {

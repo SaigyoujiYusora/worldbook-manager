@@ -89,46 +89,46 @@ export type VersionImportTemplateValidation =
   | { ok: true; template: string }
   | { ok: false; message: string; template: string };
 
-const GITHUB_API_BASE = 'https://api.github.com/repos/jerryzmtz/worldbook-manager';
-const JSDELIVR_DATA_API_BASE = 'https://data.jsdelivr.com/v1/package/gh/jerryzmtz/worldbook-manager';
+const GITHUB_API_BASE = 'https://api.github.com/repos/SaigyoujiYusora/worldbook-manager';
+const JSDELIVR_DATA_API_BASE = 'https://data.jsdelivr.com/v1/package/gh/SaigyoujiYusora/worldbook-manager';
 const VERSION_TAG_PATTERN = /^v\d+(?:\.\d+)+$/;
 const SCRIPT_SCOPES: ScriptScope[] = ['global', 'preset', 'character'];
 const VERSION_PLACEHOLDER = '{version}';
 const WORLDBOOK_MANAGER_FILE_PATH = '/dist/世界书管理器/index.js';
 const WORLDBOOK_MANAGER_IMPORT_URL_PATTERN = /https:\/\/[^\s'")]+\/dist\/世界书管理器\/index\.js(?:\?[^\s'")]*)?/g;
-const JSDELIVR_REPO_MARKER = 'jerryzmtz/worldbook-manager@';
-const RAW_REPO_MARKER = 'jerryzmtz/worldbook-manager/';
+const JSDELIVR_REPO_MARKER = 'SaigyoujiYusora/worldbook-manager@';
+const RAW_REPO_MARKER = 'SaigyoujiYusora/worldbook-manager/';
 export const CUSTOM_VERSION_IMPORT_SOURCE_ID = 'custom';
 export const VERSION_IMPORT_SOURCES: VersionImportSource[] = [
   {
     id: 'jsdelivr',
     label: 'jsDelivr 默认',
     description: '默认下载源。国内如果打不开、很慢或一直拿到旧版本，可以先换 Fastly 或 GCore。',
-    template: `https://cdn.jsdelivr.net/gh/jerryzmtz/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
+    template: `https://cdn.jsdelivr.net/gh/SaigyoujiYusora/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
   },
   {
     id: 'fastly',
     label: 'Fastly，国内优先尝试',
     description: '国内优先试这个备用入口。适合 jsDelivr 默认源打不开、解析慢或缓存不刷新时切换。',
-    template: `https://fastly.jsdelivr.net/gh/jerryzmtz/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
+    template: `https://fastly.jsdelivr.net/gh/SaigyoujiYusora/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
   },
   {
     id: 'gcore',
     label: 'GCore，国内备用',
     description: '国内第二备用入口。不同运营商表现会变，Fastly 不通或很慢时可以试这个。',
-    template: `https://gcore.jsdelivr.net/gh/jerryzmtz/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
+    template: `https://gcore.jsdelivr.net/gh/SaigyoujiYusora/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
   },
   {
     id: 'testingcf',
     label: 'Cloudflare 测试域',
     description: '用于排查默认源的缓存或解析问题。国内不一定稳定，Fastly 和 GCore 都不合适时再试。',
-    template: `https://testingcf.jsdelivr.net/gh/jerryzmtz/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
+    template: `https://testingcf.jsdelivr.net/gh/SaigyoujiYusora/worldbook-manager@${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
   },
   {
     id: 'github_raw',
     label: 'GitHub Raw',
     description: '直接读取 GitHub 原始文件。国内通常不推荐直连，主要给代理环境或排查 CDN 缓存时使用。',
-    template: `https://raw.githubusercontent.com/jerryzmtz/worldbook-manager/${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
+    template: `https://raw.githubusercontent.com/SaigyoujiYusora/worldbook-manager/${VERSION_PLACEHOLDER}/dist/世界书管理器/index.js`,
   },
 ];
 export const DEFAULT_VERSION_IMPORT_TEMPLATE = VERSION_IMPORT_SOURCES[0].template;
@@ -156,7 +156,7 @@ export function validateVersionImportTemplate(template: unknown): VersionImportT
   if (parsed.status !== 'versioned') {
     return {
       ok: false,
-      message: '分发源模板必须指向 jerryzmtz/worldbook-manager 的 index.js 文件。',
+      message: '分发源模板必须指向 SaigyoujiYusora/worldbook-manager 的 index.js 文件。',
       template: normalized,
     };
   }

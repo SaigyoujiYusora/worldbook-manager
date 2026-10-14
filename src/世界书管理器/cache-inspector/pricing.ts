@@ -7,6 +7,9 @@ type PricingRateSet = {
   inputHitUsdPerMillion: number;
   inputMissUsdPerMillion: number;
   outputUsdPerMillion: number;
+  inputHitCnyPerMillion?: number;
+  inputMissCnyPerMillion?: number;
+  outputCnyPerMillion?: number;
   note: string | null;
 };
 
@@ -68,21 +71,23 @@ const PRICING_RULES: PricingRule[] = [
     id: 'deepseek-v4-pro',
     provider: 'deepseek',
     label: 'DeepSeek V4 Pro',
-    sourceUrl: 'https://api-docs.deepseek.com/quick_start/pricing/',
-    sourceDate: SOURCE_DATE,
+    sourceUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/',
+    sourceDate: '2026-10-14',
     matches: model =>
       includesAny(model, ['deepseek-v4-pro', 'deepseek_v4_pro', 'deepseek v4 pro', 'deepseek-v4-pro-0813']),
     rates: (_usage, timestamp) => deepSeekTimeOfUseRates(timestamp, {
       offPeak: [0.022, 0.66, 1.98],
       peak: [0.044, 1.32, 3.96],
+      offPeakCny: [0.15, 4.5, 13.5],
+      peakCny: [0.3, 9, 27],
     }),
   },
   {
     id: 'deepseek-v4.1-flash',
     provider: 'deepseek',
     label: 'DeepSeek V4.1 Flash',
-    sourceUrl: 'https://api-docs.deepseek.com/quick_start/pricing/',
-    sourceDate: SOURCE_DATE,
+    sourceUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/',
+    sourceDate: '2026-10-14',
     matches: model =>
       includesAny(model, [
         'deepseek-flash',
@@ -98,6 +103,8 @@ const PRICING_RULES: PricingRule[] = [
     rates: (_usage, timestamp) => deepSeekTimeOfUseRates(timestamp, {
       offPeak: [0.003, 0.15, 0.6],
       peak: [0.006, 0.3, 1.2],
+      offPeakCny: [0.02, 1, 4],
+      peakCny: [0.04, 2, 8],
     }),
   },
   {
@@ -362,6 +369,9 @@ export function estimateCacheCost(
 
   const rates = rule.rates(usage, timestamp);
   const usdToCnyRate = getUsdToCnyRate();
+  const inputHitCnyPerMillion = rates.inputHitCnyPerMillion ?? rates.inputHitUsdPerMillion * usdToCnyRate;
+  const inputMissCnyPerMillion = rates.inputMissCnyPerMillion ?? rates.inputMissUsdPerMillion * usdToCnyRate;
+  const outputCnyPerMillion = rates.outputCnyPerMillion ?? rates.outputUsdPerMillion * usdToCnyRate;
   const pricingSnapshot: PricingSnapshot = {
     id: rule.id,
     provider: rule.provider,
@@ -373,6 +383,9 @@ export function estimateCacheCost(
     inputHitUsdPerMillion: rates.inputHitUsdPerMillion,
     inputMissUsdPerMillion: rates.inputMissUsdPerMillion,
     outputUsdPerMillion: rates.outputUsdPerMillion,
+    inputHitCnyPerMillion,
+    inputMissCnyPerMillion,
+    outputCnyPerMillion,
     note: rates.note,
   };
 
@@ -384,37 +397,46 @@ export function estimateCacheCost(
     };
   }
 
-  const inputHitUsd = priceTokens(usage.hitTokens, rates.inputHitUsdPerMillion);
-  const inputMissUsd = priceTokens(usage.missTokens, rates.inputMissUsdPerMillion);
-  const outputUsd = priceTokens(usage.outputTokens, rates.outputUsdPerMillion);
-  const savedUsd = Math.max(0, priceTokens(usage.hitTokens, rates.inputMissUsdPerMillion - rates.inputHitUsdPerMillion));
+  const inputHitCny = priceTokens(usage.hitTokens, inputHitCnyPerMillion);
+  const inputMissCny = priceTokens(usage.missTokens, inputMissCnyPerMillion);
+  const outputCny = priceTokens(usage.outputTokens, outputCnyPerMillion);
+  const savedCny = Math.max(0, priceTokens(usage.hitTokens, inputMissCnyPerMillion - inputHitCnyPerMillion));
 
   return {
     pricingSnapshot,
     costSnapshot: {
       currency: 'CNY',
-      inputHitCny: usdToCny(inputHitUsd, usdToCnyRate),
-      inputMissCny: usdToCny(inputMissUsd, usdToCnyRate),
-      outputCny: usdToCny(outputUsd, usdToCnyRate),
-      totalCny: usdToCny(inputHitUsd + inputMissUsd + outputUsd, usdToCnyRate),
-      savedCny: usdToCny(savedUsd, usdToCnyRate),
+      inputHitCny,
+      inputMissCny,
+      outputCny,
+      totalCny: inputHitCny + inputMissCny + outputCny,
+      savedCny,
     },
   };
 }
 
 function deepSeekTimeOfUseRates(
   timestamp: number,
-  rateTable: { offPeak: [number, number, number]; peak: [number, number, number] },
+  rateTable: {
+    offPeak: [number, number, number];
+    peak: [number, number, number];
+    offPeakCny: [number, number, number];
+    peakCny: [number, number, number];
+  },
 ): PricingRateSet {
   const peak = isDeepSeekPeakTime(timestamp);
   const [hit, miss, output] = peak ? rateTable.peak : rateTable.offPeak;
+  const [hitCny, missCny, outputCny] = peak ? rateTable.peakCny : rateTable.offPeakCny;
   return {
     inputHitUsdPerMillion: hit,
     inputMissUsdPerMillion: miss,
     outputUsdPerMillion: output,
+    inputHitCnyPerMillion: hitCny,
+    inputMissCnyPerMillion: missCny,
+    outputCnyPerMillion: outputCny,
     note: peak
-      ? 'DeepSeek peak rate: 01:00-04:00 or 06:00-10:00 UTC, Monday-Friday, excluding Chinese public holidays.'
-      : 'DeepSeek off-peak rate: all hours outside the weekday peak windows, including weekends and Chinese public holidays.',
+      ? 'DeepSeek peak rate. Cost uses the official CNY price directly; USD price is reference only.'
+      : 'DeepSeek off-peak rate. Cost uses the official CNY price directly; USD price is reference only.',
   };
 }
 
@@ -480,9 +502,6 @@ function priceTokens(tokens: number, usdPerMillion: number): number {
   return (tokens * usdPerMillion) / 1_000_000;
 }
 
-function usdToCny(value: number, usdToCnyRate: number): number {
-  return value * usdToCnyRate;
-}
 
 function includesAny(model: string, fragments: string[]): boolean {
   const normalized = normalizedModel(model);

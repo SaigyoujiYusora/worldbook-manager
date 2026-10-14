@@ -28,6 +28,9 @@ export type PricingSnapshot = {
   inputHitUsdPerMillion: number;
   inputMissUsdPerMillion: number;
   outputUsdPerMillion: number;
+  inputHitCnyPerMillion?: number;
+  inputMissCnyPerMillion?: number;
+  outputCnyPerMillion?: number;
   note: string | null;
 };
 

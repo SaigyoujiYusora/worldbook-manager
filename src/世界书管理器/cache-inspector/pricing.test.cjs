@@ -46,6 +46,27 @@ test('DeepSeek Flash uses off-peak rates outside peak windows', () => {
   assert.equal(pricing.outputUsdPerMillion, 0.6);
 });
 
+test('DeepSeek V4 Pro uses official CNY rates directly instead of USD FX conversion', () => {
+  const timestamp = Date.parse('2026-10-09T04:30:00Z'); // 12:30 Beijing, off-peak.
+  const result = estimateCacheCost('deepseek-v4-pro', usage({ hit: 1_000_000, miss: 1_000_000, output: 1_000_000 }), timestamp);
+  assert.equal(result.pricingSnapshot.inputHitCnyPerMillion, 0.15);
+  assert.equal(result.pricingSnapshot.inputMissCnyPerMillion, 4.5);
+  assert.equal(result.pricingSnapshot.outputCnyPerMillion, 13.5);
+  assert.equal(result.costSnapshot.inputHitCny, 0.15);
+  assert.equal(result.costSnapshot.inputMissCny, 4.5);
+  assert.equal(result.costSnapshot.outputCny, 13.5);
+  assert.equal(result.costSnapshot.totalCny, 18.15);
+});
+
+test('DeepSeek Flash uses official CNY rates directly instead of USD FX conversion', () => {
+  const timestamp = Date.parse('2026-10-09T01:30:00Z'); // 09:30 Beijing, peak.
+  const result = estimateCacheCost('deepseek-flash', usage({ hit: 1_000_000, miss: 1_000_000, output: 1_000_000 }), timestamp);
+  assert.equal(result.pricingSnapshot.inputHitCnyPerMillion, 0.04);
+  assert.equal(result.pricingSnapshot.inputMissCnyPerMillion, 2);
+  assert.equal(result.pricingSnapshot.outputCnyPerMillion, 8);
+  assert.equal(result.costSnapshot.totalCny, 10.04);
+});
+
 test('DeepSeek Chinese public holidays are off-peak even on weekdays', () => {
   const timestamp = Date.parse('2026-10-05T01:30:00Z'); // National Day holiday.
   assert.equal(isDeepSeekPeakTime(timestamp), false);
