@@ -1838,7 +1838,7 @@ async function hydrateRecordFromUsage(
   snapshot?: PromptSnapshotRecord | null,
 ): Promise<void> {
   const usageSnapshot = usageToSnapshot(usage);
-  const pricing = estimateCacheCost(record.model, usageSnapshot);
+  const pricing = estimateCacheCost(record.model, usageSnapshot, record.timestamp);
   const completedRecord = {
     ...record,
     ...usageSnapshot,

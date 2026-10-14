@@ -33,6 +33,20 @@
       </article>
     </div>
 
+    <div
+      class="wbc-pricing-state"
+      :class="deepSeekCurrentPeak ? 'is-peak' : 'is-off-peak'"
+      :title="deepSeekCurrentTooltip"
+      aria-live="polite"
+    >
+      <div class="wbc-pricing-state-main">
+        <span>DeepSeek 当前费率</span>
+        <strong>{{ deepSeekCurrentPeak ? '🔴 梁文峰' : '🟢 梁文谷' }}</strong>
+      </div>
+      <span>{{ deepSeekCurrentRateLabel }}</span>
+      <small>{{ deepSeekNextTransitionLabel }}</small>
+    </div>
+
     <div class="wbc-toolbar" data-wbm-cache-tutorial="filters">
       <label class="wbc-field">
         <span>模型</span>
@@ -116,7 +130,10 @@
                   {{ formatTokenLine(record) }}
                 </small>
               </span>
-              <span class="wbc-cost" :title="priceTooltip(record)">{{ recordCostLabel(record) }}</span>
+              <span class="wbc-cost" :class="deepSeekPeriodClass(record)" :title="priceTooltip(record)">
+                <span>{{ recordCostLabel(record) }}</span>
+                <small v-if="deepSeekPeriodLabel(record)">{{ deepSeekPeriodLabel(record) }}</small>
+              </span>
               <span class="wbc-status" :class="`status-${record.status}`">
                 <i v-if="record.status === 'pending'" class="fa-solid fa-circle-notch fa-spin" aria-hidden="true"></i>
                 {{ statusLabel(record) }}
@@ -421,6 +438,7 @@ import {
   type CacheUsageModelSummary,
 } from './analytics';
 import { EXCHANGE_RATE_UPDATED_EVENT, refreshUsdToCnyRate } from './exchange-rate';
+import { isDeepSeekPeakTime } from './pricing';
 import {
   buildFullTextSegments,
   CACHE_RECORDS_CHANGED_EVENT,
@@ -445,6 +463,9 @@ const CHART_BASELINE = 116;
 const CHART_LEFT = 12;
 const CHART_RIGHT = 308;
 const PENDING_RECORD_REFRESH_DELAY_MS = 500;
+const PRICING_CLOCK_INTERVAL_MS = 1_000;
+const HOUR_MS = 60 * 60 * 1_000;
+const DAY_MS = 24 * HOUR_MS;
 const PANEL_TRACE_LIMIT = 160;
 const PANEL_TRACE_LIST_LIMIT = 20;
 
@@ -497,6 +518,7 @@ const usageChartOpen = ref(false);
 const selectedBeforeId = ref<string | null>(null);
 const selectedAfterId = ref<string | null>(null);
 const exchangeRateVersion = ref(0);
+const pricingClock = ref(Date.now());
 const filters = reactive<CacheRecordFilterState>(readCacheFilterPreference());
 const fullText = reactive({
   open: false,
@@ -506,6 +528,7 @@ const fullText = reactive({
   token: 0,
 });
 let pendingRecordsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let pricingClockTimer: ReturnType<typeof setInterval> | null = null;
 let pendingRecordsRefreshRunning = false;
 
 const modelOptions = computed(() => {
@@ -589,11 +612,58 @@ const tokenStackBars = computed(() => buildTokenStackBars(usageChartData.value.b
 const requestLine = computed(() => buildLineMarks(usageChartData.value.buckets, bucket => bucket.requestCount));
 const requestLinePath = computed(() => linePath(requestLine.value.points));
 const requestAreaPath = computed(() => areaPath(requestLine.value.points));
+const deepSeekCurrentPeak = computed(() => isDeepSeekPeakTime(pricingClock.value));
+const deepSeekCurrentPricing = computed(() => {
+  void exchangeRateVersion.value;
+  return estimateCacheCost(
+    'deepseek-v4-pro',
+    {
+      hitTokens: 0,
+      missTokens: 0,
+      totalCacheTokens: 0,
+      hitRate: null,
+      outputTokens: 0,
+      totalTokens: 0,
+      rawUsage: null,
+    },
+    pricingClock.value,
+  ).pricingSnapshot;
+});
+const deepSeekCurrentRateLabel = computed(() => {
+  const pricing = deepSeekCurrentPricing.value;
+  if (!pricing) return '费率未匹配';
+  return [
+    `命中 ¥${formatMillionRateCny(pricing.inputHitUsdPerMillion, pricing.usdToCnyRate)}/M`,
+    `未命中 ¥${formatMillionRateCny(pricing.inputMissUsdPerMillion, pricing.usdToCnyRate)}/M`,
+    `输出 ¥${formatMillionRateCny(pricing.outputUsdPerMillion, pricing.usdToCnyRate)}/M`,
+  ].join(' · ');
+});
+const deepSeekNextTransitionLabel = computed(() => {
+  const next = nextDeepSeekPriceTransition(pricingClock.value);
+  if (next === null) return '暂未找到下一次峰谷切换';
+  const nextPeak = isDeepSeekPeakTime(next + 1);
+  return `${formatBeijingTime(next)} 进入 ${nextPeak ? '🔴 梁文峰' : '🟢 梁文谷'}`;
+});
+const deepSeekCurrentTooltip = computed(() => {
+  const pricing = deepSeekCurrentPricing.value;
+  return [
+    deepSeekCurrentPeak.value ? 'DeepSeek 当前处于梁文峰（高峰价）' : 'DeepSeek 当前处于梁文谷（闲时价）',
+    deepSeekCurrentRateLabel.value,
+    deepSeekNextTransitionLabel.value,
+    pricing?.note ?? '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+});
 
 onMounted(() => {
   logPanelTrace('panel.mount');
   void refreshRecords();
   void refreshUsdToCnyRate();
+  pricingClock.value = Date.now();
+  pricingClockTimer = setInterval(() => {
+    pricingClock.value = Date.now();
+  }, PRICING_CLOCK_INTERVAL_MS);
   window.addEventListener(CACHE_RECORDS_CHANGED_EVENT, handleRecordsChanged as EventListener);
   window.addEventListener(EXCHANGE_RATE_UPDATED_EVENT, handleExchangeRateUpdated as EventListener);
   window.visualViewport?.addEventListener('resize', handleCacheModalViewportChange);
@@ -603,6 +673,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearPendingRecordsRefreshTimer();
+  if (pricingClockTimer !== null) clearInterval(pricingClockTimer);
+  pricingClockTimer = null;
   window.removeEventListener(CACHE_RECORDS_CHANGED_EVENT, handleRecordsChanged as EventListener);
   window.removeEventListener(EXCHANGE_RATE_UPDATED_EVENT, handleExchangeRateUpdated as EventListener);
   window.visualViewport?.removeEventListener('resize', handleCacheModalViewportChange);
@@ -1327,12 +1399,75 @@ function recordCostLabel(record: CacheSummaryRecord): string {
 function priceTooltip(record: CacheSummaryRecord): string {
   const pricingSnapshot = priceForRecord(record).pricingSnapshot;
   if (!pricingSnapshot) return '当前模型没有匹配到内置费率规则';
-  return `${pricingSnapshot.label} · ${pricingSnapshot.sourceDate} · 按 1 USD = ${pricingSnapshot.usdToCnyRate.toFixed(4)} RMB`;
+  const period = deepSeekPeriod(record);
+  return [
+    `${pricingSnapshot.label}${period ? ` · ${period === 'peak' ? '🔴 梁文峰' : '🟢 梁文谷'}` : ''}`,
+    `命中 ¥${formatMillionRateCny(pricingSnapshot.inputHitUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M · 未命中 ¥${formatMillionRateCny(pricingSnapshot.inputMissUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M · 输出 ¥${formatMillionRateCny(pricingSnapshot.outputUsdPerMillion, pricingSnapshot.usdToCnyRate)}/M`,
+    `费率日期 ${pricingSnapshot.sourceDate} · 1 USD = ${pricingSnapshot.usdToCnyRate.toFixed(4)} RMB`,
+    pricingSnapshot.note ?? '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function priceForRecord(record: CacheSummaryRecord): ReturnType<typeof estimateCacheCost> {
   void exchangeRateVersion.value;
-  return estimateCacheCost(record.model, record);
+  if (record.pricingSnapshot && record.costSnapshot) {
+    return { pricingSnapshot: record.pricingSnapshot, costSnapshot: record.costSnapshot };
+  }
+  return estimateCacheCost(record.model, record, record.timestamp);
+}
+
+function deepSeekPeriod(record: CacheSummaryRecord): 'peak' | 'off-peak' | null {
+  const pricingSnapshot = priceForRecord(record).pricingSnapshot;
+  if (!pricingSnapshot || pricingSnapshot.provider !== 'deepseek') return null;
+  const note = pricingSnapshot.note?.toLowerCase() ?? '';
+  if (note.includes('off-peak')) return 'off-peak';
+  if (note.includes('peak rate')) return 'peak';
+  return isDeepSeekPeakTime(record.timestamp) ? 'peak' : 'off-peak';
+}
+
+function deepSeekPeriodLabel(record: CacheSummaryRecord): string {
+  const period = deepSeekPeriod(record);
+  if (period === 'peak') return '🔴 梁文峰';
+  if (period === 'off-peak') return '🟢 梁文谷';
+  return '';
+}
+
+function deepSeekPeriodClass(record: CacheSummaryRecord): string {
+  const period = deepSeekPeriod(record);
+  if (period === 'peak') return 'is-peak';
+  if (period === 'off-peak') return 'is-off-peak';
+  return '';
+}
+
+function nextDeepSeekPriceTransition(timestamp: number): number | null {
+  const date = new Date(timestamp);
+  const dayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  for (let dayOffset = 0; dayOffset < 15; dayOffset += 1) {
+    for (const hour of [1, 4, 6, 10]) {
+      const candidate = dayStart + dayOffset * DAY_MS + hour * HOUR_MS;
+      if (candidate <= timestamp + 999) continue;
+      if (isDeepSeekPeakTime(candidate - 1) !== isDeepSeekPeakTime(candidate + 1)) return candidate;
+    }
+  }
+  return null;
+}
+
+function formatBeijingTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function formatMillionRateCny(usdPerMillion: number, usdToCnyRate: number): string {
+  return trimTrailingZero((usdPerMillion * usdToCnyRate).toFixed(3));
 }
 
 function formatCny(value: number): string {
@@ -1453,6 +1588,47 @@ function formatError(error: unknown): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.wbc-pricing-state {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid var(--wbm-border);
+  border-radius: var(--wbm-radius-lg);
+  padding: 9px 12px;
+  background: #17181b;
+}
+
+.wbc-pricing-state.is-peak {
+  border-color: rgba(251, 113, 133, 0.58);
+  background: rgba(127, 29, 29, 0.13);
+}
+
+.wbc-pricing-state.is-off-peak {
+  border-color: rgba(74, 222, 128, 0.5);
+  background: rgba(20, 83, 45, 0.13);
+}
+
+.wbc-pricing-state-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wbc-pricing-state-main span,
+.wbc-pricing-state small {
+  color: var(--wbm-muted);
+}
+
+.wbc-pricing-state > span {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.wbc-pricing-state small {
+  margin-left: auto;
 }
 
 .wbc-toolbar {
@@ -1645,6 +1821,25 @@ function formatError(error: unknown): string {
 .wbc-cost {
   color: var(--wbm-muted);
   font-size: 12px;
+}
+
+.wbc-cost {
+  display: grid;
+  gap: 1px;
+}
+
+.wbc-cost small {
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.wbc-cost.is-peak small {
+  color: #fb7185;
+}
+
+.wbc-cost.is-off-peak small {
+  color: #4ade80;
 }
 
 .wbc-status {

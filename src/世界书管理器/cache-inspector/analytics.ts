@@ -65,7 +65,8 @@ export function buildCacheUsageChartData(
     const bucket = bucketMap.get(dateKey(record.timestamp));
     if (!bucket) continue;
 
-    const cost = estimateCacheCost(record.model, record).costSnapshot;
+    const cost =
+      record.costSnapshot ?? estimateCacheCost(record.model, record, record.timestamp).costSnapshot;
     const tokenTotal = tokenTotalForRecord(record);
 
     bucket.requestCount += 1;
