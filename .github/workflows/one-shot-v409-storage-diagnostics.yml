@@ -1,0 +1,183 @@
+name: one-shot v4.09 storage diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-v409-storage-diagnostics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply v4.09 storage diagnostics and safety guard
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          function replaceOnce(path, from, to) {
+            let text = fs.readFileSync(path, 'utf8');
+            if (text.includes(to)) {
+              console.log(`[skip] ${path}: already applied`);
+              return;
+            }
+            const count = text.split(from).length - 1;
+            if (count !== 1) throw new Error(`${path}: expected 1 match, got ${count}`);
+            text = text.replace(from, to);
+            fs.writeFileSync(path, text);
+            console.log(`[ok] ${path}`);
+          }
+
+          const app = 'src/世界书管理器/App.vue';
+          replaceOnce(app, "const APP_VERSION = 'v4.08';", "const APP_VERSION = 'v4.09';");
+
+          const storage = 'src/世界书管理器/cache-inspector/storage.ts';
+          replaceOnce(
+            storage,
+            `const MAX_PROMPT_SNAPSHOT_BYTES = 128 * 1024 * 1024;\n`,
+            `const MAX_PROMPT_SNAPSHOT_BYTES = 128 * 1024 * 1024;\nconst LAST_CLEAR_AUDIT_KEY = 'worldbookCacheInspectorLastClearAuditV1';\n\nexport type CacheStorageDiagnostics = {\n  checkedAt: number;\n  href: string;\n  origin: string;\n  databaseName: string;\n  databaseVersion: number;\n  databaseNames: string[] | null;\n  storeNames: string[];\n  summaryCount: number;\n  snapshotCount: number;\n  lastClearAudit: { at: number; href: string } | null;\n};\n\nexport type CacheBackupData = {\n  exportedAt: number;\n  href: string;\n  databaseName: string;\n  databaseVersion: number;\n  summaries: CacheSummaryRecord[];\n  snapshots: PromptSnapshotRecord[];\n};\n`,
+          );
+
+          replaceOnce(
+            storage,
+            `export async function getCacheSummary(id: string): Promise<CacheSummaryRecord | null> {`,
+            `export async function getCacheStorageDiagnostics(): Promise<CacheStorageDiagnostics> {\n  const databaseNames = await listKnownIndexedDatabaseNames();\n  const db = await openDatabase();\n  try {\n    const storeNames = Array.from(db.objectStoreNames);\n    const transaction = db.transaction([SUMMARY_STORE, SNAPSHOT_STORE], 'readonly');\n    const summaryRequest = transaction.objectStore(SUMMARY_STORE).count();\n    const snapshotRequest = transaction.objectStore(SNAPSHOT_STORE).count();\n    const [summaryCount, snapshotCount] = await Promise.all([\n      requestToPromise(summaryRequest, '读取缓存统计数量失败'),\n      requestToPromise(snapshotRequest, '读取完整提示词数量失败'),\n    ]);\n    return {\n      checkedAt: Date.now(),\n      href: currentHref(),\n      origin: currentOrigin(),\n      databaseName: db.name,\n      databaseVersion: db.version,\n      databaseNames,\n      storeNames,\n      summaryCount,\n      snapshotCount,\n      lastClearAudit: readLastClearAudit(),\n    };\n  } finally {\n    db.close();\n  }\n}\n\nexport async function createCacheBackup(): Promise<CacheBackupData> {\n  const [summaries, snapshots] = await Promise.all([\n    listCacheSummaries(),\n    withStore<PromptSnapshotRecord[]>(\n      SNAPSHOT_STORE,\n      'readonly',\n      store => store.getAll(),\n      '读取完整提示词失败',\n    ),\n  ]);\n  return {\n    exportedAt: Date.now(),\n    href: currentHref(),\n    databaseName: DB_NAME,\n    databaseVersion: DB_VERSION,\n    summaries,\n    snapshots,\n  };\n}\n\nexport async function getCacheSummary(id: string): Promise<CacheSummaryRecord | null> {`,
+          );
+
+          replaceOnce(
+            storage,
+            `export async function clearCacheRecords(): Promise<void> {\n  await withCacheStores('readwrite', stores => {\n    stores.summary.clear();\n    stores.snapshot.clear();\n  });\n}\n`,
+            `export async function clearCacheRecords(): Promise<void> {\n  await withCacheStores('readwrite', stores => {\n    stores.summary.clear();\n    stores.snapshot.clear();\n  });\n  writeLastClearAudit();\n}\n`,
+          );
+
+          replaceOnce(
+            storage,
+            `function estimatePromptSnapshotBytes(snapshot: PromptSnapshotRecord): number {`,
+            `async function listKnownIndexedDatabaseNames(): Promise<string[] | null> {\n  try {\n    const factory = indexedDB as IDBFactory & { databases?: () => Promise<Array<{ name?: string }>> };\n    if (typeof factory.databases !== 'function') return null;\n    const databases = await factory.databases();\n    return databases\n      .map(database => (typeof database.name === 'string' ? database.name : ''))\n      .filter(Boolean)\n      .sort();\n  } catch {\n    return null;\n  }\n}\n\nfunction readLastClearAudit(): { at: number; href: string } | null {\n  try {\n    const raw = globalThis.localStorage?.getItem(LAST_CLEAR_AUDIT_KEY);\n    if (!raw) return null;\n    const parsed: unknown = JSON.parse(raw);\n    if (!isRecord(parsed)) return null;\n    const at = typeof parsed.at === 'number' && Number.isFinite(parsed.at) ? parsed.at : 0;\n    const href = typeof parsed.href === 'string' ? parsed.href : '';\n    return at > 0 ? { at, href } : null;\n  } catch {\n    return null;\n  }\n}\n\nfunction writeLastClearAudit(): void {\n  try {\n    globalThis.localStorage?.setItem(\n      LAST_CLEAR_AUDIT_KEY,\n      JSON.stringify({ at: Date.now(), href: currentHref() }),\n    );\n  } catch {\n    // 审计信息写入失败不能影响清空动作本身。\n  }\n}\n\nfunction currentHref(): string {\n  try {\n    return globalThis.location?.href ?? '';\n  } catch {\n    return '';\n  }\n}\n\nfunction currentOrigin(): string {\n  try {\n    return globalThis.location?.origin ?? '';\n  } catch {\n    return '';\n  }\n}\n\nfunction estimatePromptSnapshotBytes(snapshot: PromptSnapshotRecord): number {`,
+          );
+
+          const index = 'src/世界书管理器/cache-inspector/index.ts';
+          replaceOnce(
+            index,
+            `export {\n  clearCacheRecords,\n  getCacheRecord,\n  getCacheSummary,\n  getPromptSnapshot,\n  listCacheRecords,\n  listCacheSummaries,\n} from './storage';`,
+            `export {\n  clearCacheRecords,\n  createCacheBackup,\n  getCacheRecord,\n  getCacheStorageDiagnostics,\n  getCacheSummary,\n  getPromptSnapshot,\n  listCacheRecords,\n  listCacheSummaries,\n} from './storage';\nexport type { CacheBackupData, CacheStorageDiagnostics } from './storage';`,
+          );
+
+          const panel = 'src/世界书管理器/cache-inspector/CacheInspectorPanel.vue';
+          replaceOnce(
+            panel,
+            `          <div class="wbc-record-header-actions">\n            <button\n              class="wbm-small-btn"\n              type="button"\n              data-wbm-cache-tutorial="usage-chart"`,
+            `          <div class="wbc-record-header-actions">\n            <button class="wbm-small-btn" type="button" :disabled="storageDiagLoading" @click="openStorageDiagnostics">\n              <i class="fa-solid fa-database" :class="{ 'fa-spin': storageDiagLoading }"></i>\n              存储诊断\n            </button>\n            <button\n              class="wbm-small-btn"\n              type="button"\n              data-wbm-cache-tutorial="usage-chart"`,
+          );
+
+          replaceOnce(
+            panel,
+            `    <div v-if="clearConfirmOpen" class="wbm-confirm wbc-modal wbc-confirm-modal" @click.self="cancelClearRecords">`,
+            `    <div v-if="storageDiagOpen" class="wbm-confirm wbc-modal wbc-confirm-modal" @click.self="closeStorageDiagnostics">\n      <section class="wbc-modal-box wbc-confirm-box" role="dialog" aria-modal="true" aria-label="缓存存储诊断">\n        <h3>缓存存储诊断</h3>\n        <p v-if="storageDiagLoading">正在读取 IndexedDB 状态...</p>\n        <div v-else-if="storageDiagError" class="wbm-alert wbm-alert-error">{{ storageDiagError }}</div>\n        <pre v-else class="wbc-storage-diagnostics">{{ storageDiagnosticsText }}</pre>\n        <p>如果记录突然从非零变成 0，v4.09 会保留当前界面数据并报警，不再静默把列表覆盖为空。</p>\n        <div class="wbc-dialog-actions">\n          <button class="wbm-small-btn" type="button" :disabled="storageDiagLoading" @click="refreshStorageDiagnostics">刷新诊断</button>\n          <button class="wbm-small-btn" type="button" :disabled="storageDiagLoading" @click="exportStorageBackup">导出 JSON 备份</button>\n          <button class="wbm-primary-btn" type="button" @click="closeStorageDiagnostics">关闭</button>\n        </div>\n      </section>\n    </div>\n\n    <div v-if="clearConfirmOpen" class="wbm-confirm wbc-modal wbc-confirm-modal" @click.self="cancelClearRecords">`,
+          );
+
+          replaceOnce(
+            panel,
+            `  clearCacheRecords,\n  comparePromptRecords,\n  estimateCacheCost,\n  getPromptSnapshot,\n  listCacheSummaries,`,
+            `  clearCacheRecords,\n  comparePromptRecords,\n  createCacheBackup,\n  estimateCacheCost,\n  getCacheStorageDiagnostics,\n  getPromptSnapshot,\n  listCacheSummaries,`,
+          );
+
+          replaceOnce(
+            panel,
+            `  type CacheSummaryRecord,\n  type CacheVisibleStats,\n  type PromptSnapshotRecord,`,
+            `  type CacheStorageDiagnostics,\n  type CacheSummaryRecord,\n  type CacheVisibleStats,\n  type PromptSnapshotRecord,`,
+          );
+
+          replaceOnce(
+            panel,
+            `const usageChartOpen = ref(false);\nconst selectedBeforeId = ref<string | null>(null);`,
+            `const usageChartOpen = ref(false);\nconst storageDiagOpen = ref(false);\nconst storageDiagLoading = ref(false);\nconst storageDiagError = ref('');\nconst storageDiag = ref<CacheStorageDiagnostics | null>(null);\nconst selectedBeforeId = ref<string | null>(null);`,
+          );
+
+          replaceOnce(
+            panel,
+            `const usageChartScopeLabel = computed(() => buildUsageChartScopeLabel());`,
+            `const storageDiagnosticsText = computed(() => {\n  const diagnostic = storageDiag.value;\n  if (!diagnostic) return '暂无诊断结果';\n  const lastClear = diagnostic.lastClearAudit\n    ? \`\${formatTime(diagnostic.lastClearAudit.at)} · \${diagnostic.lastClearAudit.href || '-'}\`\n    : '未发现插件清空审计记录';\n  return [\n    \`检查时间: \${formatTime(diagnostic.checkedAt)}\`,\n    \`href: \${diagnostic.href || '-'}\`,\n    \`origin: \${diagnostic.origin || '-'}\`,\n    \`数据库: \${diagnostic.databaseName} (v\${diagnostic.databaseVersion})\`,\n    \`summaryRecords: \${diagnostic.summaryCount}\`,\n    \`promptSnapshots: \${diagnostic.snapshotCount}\`,\n    \`stores: \${diagnostic.storeNames.join(', ') || '-'}\`,\n    \`当前 origin 可见数据库: \${diagnostic.databaseNames?.join(', ') || diagnostic.databaseNames === null ? '浏览器不支持枚举' : '-'}\`,\n    \`最近一次插件清空: \${lastClear}\`,\n  ].join('\\n');\n});\nconst usageChartScopeLabel = computed(() => buildUsageChartScopeLabel());`,
+          );
+
+          // Fix operator precedence in the database-list line with an explicit helper expression.
+          let panelText = fs.readFileSync(panel, 'utf8');
+          panelText = panelText.replace(
+            "    `当前 origin 可见数据库: ${diagnostic.databaseNames?.join(', ') || diagnostic.databaseNames === null ? '浏览器不支持枚举' : '-'}`,
+",
+            "    `当前 origin 可见数据库: ${diagnostic.databaseNames === null ? '浏览器不支持枚举' : diagnostic.databaseNames.join(', ') || '-'}`,
+",
+          );
+          fs.writeFileSync(panel, panelText);
+
+          replaceOnce(
+            panel,
+            `watch([usageChartOpen, clearConfirmOpen], ([isUsageChartOpen, isClearConfirmOpen]) => {\n  if (isUsageChartOpen || isClearConfirmOpen) scheduleCacheModalViewportSync();\n});`,
+            `watch([usageChartOpen, clearConfirmOpen, storageDiagOpen], ([isUsageChartOpen, isClearConfirmOpen, isStorageDiagOpen]) => {\n  if (isUsageChartOpen || isClearConfirmOpen || isStorageDiagOpen) scheduleCacheModalViewportSync();\n});`,
+          );
+
+          replaceOnce(
+            panel,
+            `  try {\n    records.value = filterDisplayableRecords(await listCacheSummaries());\n    pruneSelection();`,
+            `  try {\n    const storedRecords = filterDisplayableRecords(await listCacheSummaries());\n    if (!isClearing.value && records.value.length > 0 && storedRecords.length === 0) {\n      loadError.value = \`存储异常：本次读取从 \${records.value.length} 条突然变成 0 条。为防止数据被静默覆盖，已保留当前界面记录。请打开“存储诊断”查看数据库状态并立即导出备份。\`;\n      logPanelTrace('panel.storage.zero-read-guard', { previousCount: records.value.length });\n      return;\n    }\n    records.value = storedRecords;\n    pruneSelection();`,
+          );
+
+          replaceOnce(
+            panel,
+            `function openUsageChart(): void {\n  usageChartOpen.value = true;\n  scheduleCacheModalViewportSync();\n}\n`,
+            `async function openStorageDiagnostics(): Promise<void> {\n  storageDiagOpen.value = true;\n  scheduleCacheModalViewportSync();\n  await refreshStorageDiagnostics();\n}\n\nfunction closeStorageDiagnostics(): void {\n  storageDiagOpen.value = false;\n}\n\nasync function refreshStorageDiagnostics(): Promise<void> {\n  storageDiagLoading.value = true;\n  storageDiagError.value = '';\n  try {\n    storageDiag.value = await getCacheStorageDiagnostics();\n  } catch (error) {\n    storageDiagError.value = \`读取存储诊断失败：\${formatError(error)}\`;\n  } finally {\n    storageDiagLoading.value = false;\n    scheduleCacheModalViewportSync();\n  }\n}\n\nasync function exportStorageBackup(): Promise<void> {\n  storageDiagLoading.value = true;\n  storageDiagError.value = '';\n  try {\n    const backup = await createCacheBackup();\n    const stamp = new Date(backup.exportedAt).toISOString().replace(/[:.]/g, '-');\n    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });\n    const url = URL.createObjectURL(blob);\n    try {\n      const anchor = document.createElement('a');\n      anchor.href = url;\n      anchor.download = \`worldbook-cache-backup-\${stamp}.json\`;\n      anchor.style.display = 'none';\n      document.body.appendChild(anchor);\n      anchor.click();\n      anchor.remove();\n    } finally {\n      URL.revokeObjectURL(url);\n    }\n    storageDiag.value = await getCacheStorageDiagnostics();\n  } catch (error) {\n    storageDiagError.value = \`导出缓存备份失败：\${formatError(error)}\`;\n  } finally {\n    storageDiagLoading.value = false;\n  }\n}\n\nfunction openUsageChart(): void {\n  usageChartOpen.value = true;\n  scheduleCacheModalViewportSync();\n}\n`,
+          );
+
+          replaceOnce(
+            panel,
+            `function handleCacheModalViewportChange(): void {\n  if (usageChartOpen.value || clearConfirmOpen.value) scheduleCacheModalViewportSync();\n}`,
+            `function handleCacheModalViewportChange(): void {\n  if (usageChartOpen.value || clearConfirmOpen.value || storageDiagOpen.value) scheduleCacheModalViewportSync();\n}`,
+          );
+
+          replaceOnce(
+            panel,
+            `.wbc-toolbar {`,
+            `.wbc-storage-diagnostics {\n  max-height: 42vh;\n  overflow: auto;\n  margin: 0;\n  padding: 10px;\n  border: 1px solid var(--wbm-border);\n  border-radius: var(--wbm-radius-md);\n  background: rgba(0, 0, 0, 0.24);\n  color: var(--wbm-text);\n  white-space: pre-wrap;\n  word-break: break-all;\n  font-size: 12px;\n  line-height: 1.55;\n}\n\n.wbc-toolbar {`,
+          );
+
+          console.log('v4.09 storage diagnostics patch complete');
+          NODE
+
+      - name: Use Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install, test and build
+        run: |
+          pnpm install
+          node --test src/世界书管理器/cache-inspector/pricing.test.cjs
+          pnpm build
+          rm -rf dist/角色卡示例 dist/脚本示例 dist/流式楼层界面示例 dist/前端界面示例
+
+      - name: Commit v4.09 source and bundle
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/世界书管理器/App.vue src/世界书管理器/cache-inspector/index.ts src/世界书管理器/cache-inspector/storage.ts src/世界书管理器/cache-inspector/CacheInspectorPanel.vue dist/世界书管理器/index.js dist/世界书管理器/index.js.map
+          git commit -m 'fix: 缓存存储诊断与零记录保护 v4.09'
+          git push origin HEAD:main
+
+      - name: Tag v4.09
+        run: |
+          git tag -f v4.09 HEAD
+          git push origin refs/tags/v4.09 --force
